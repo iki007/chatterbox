@@ -1,0 +1,54 @@
+# docker-compose.yml for Chatterbox TTS
+version: '3.8'
+
+services:
+  chatterbox-tts:
+    build: .
+    image: chatterbox-tts:latest
+    container_name: chatterbox-tts
+    ports:
+      - "8001:8001"
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - PYTHONPATH=/app/src
+      - PYTHONUNBUFFERED=1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      # Optional: Mount cache directory to persist model downloads
+      - ./cache:/home/chatterbox/.cache
+      # Optional: Mount outputs directory
+      - ./outputs:/app/outputs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    shm_size: 2gb
+    mem_limit: 16g
+
+  # Optional: Add OpenWebUI service
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: openwebui
+    ports:
+      - "3000:8080"
+    environment:
+      - OPENAI_API_BASE_URL=http://chatterbox-tts:8001/v1
+      - OPENAI_API_KEY=sk-dummy
+      - ENABLE_TTS=true
+    volumes:
+      - openwebui-data:/app/backend/data
+    depends_on:
+      - chatterbox-tts
+    restart: unless-stopped
+
+volumes:
+  openwebui-data:
