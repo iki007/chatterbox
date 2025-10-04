@@ -1,11 +1,11 @@
 #!/bin/bash
-# Docker build and run scripts for Chatterbox TTS
+# Docker build and run helper for Chatterbox TTS
 
 # Build script
 echo "🐳 Building Chatterbox TTS Docker image..."
 
 # Build the Docker image
-docker build -t chatterbox-tts:latest .
+docker build -t chatterbox-gpu .
 
 echo "✅ Docker image built successfully!"
 
@@ -20,6 +20,9 @@ fi
 
 echo "✅ NVIDIA Docker runtime is available"
 
+# Ensure the host cache directory exists so the volume mount works cleanly
+mkdir -p "$HOME/.cache/huggingface"
+
 # Run script
 echo "🚀 Starting Chatterbox TTS container..."
 
@@ -31,11 +34,13 @@ docker rm chatterbox-tts 2>/dev/null || true
 docker run -d \
     --name chatterbox-tts \
     --gpus all \
+    -e CBX_SKIP_STARTUP_LOAD=1 \
     -p 8001:8001 \
+    -v "$HOME/.cache/huggingface:/home/chatterbox/.cache/huggingface" \
     --restart unless-stopped \
     --memory="16g" \
     --shm-size="2g" \
-    chatterbox-tts:latest
+    chatterbox-gpu
 
 echo "⏳ Waiting for container to start..."
 sleep 10
@@ -43,7 +48,7 @@ sleep 10
 # Check if container is running
 if docker ps | grep -q chatterbox-tts; then
     echo "✅ Container is running!"
-    echo "🌐 API available at: http://localhost:8001"
+    echo "🌐 API available at: http://localhost:8001/v1"
     echo "📖 API docs at: http://localhost:8001/docs"
     echo "🏥 Health check: http://localhost:8001/health"
 else

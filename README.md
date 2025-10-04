@@ -60,6 +60,24 @@ ta.save("test-2.wav", wav, model.sr)
 ```
 See `example_tts.py` for more examples.
 
+# Docker
+Build the OpenAI-compatible API image directly from the repo root:
+
+```bash
+docker build -t chatterbox-gpu .
+```
+
+Run the container (GPU optional but recommended for full performance):
+
+```bash
+docker run --rm --gpus all \
+  -e CBX_SKIP_STARTUP_LOAD=1 \
+  -v $HOME/.cache/huggingface:/home/chatterbox/.cache/huggingface \
+  -p 8001:8001 chatterbox-gpu
+```
+
+The `CBX_SKIP_STARTUP_LOAD=1` flag defers model loading until the first request, and the cache volume mount avoids re-downloading weights between runs. The service exposes an OpenAI-style endpoint at `http://localhost:8001/v1` plus interactive API docs at `http://localhost:8001/docs`. A ready-made `docker-compose.yml` is included if you prefer composing with OpenWebUI or persisting caches.
+
 # Acknowledgements
 - [Cosyvoice](https://github.com/FunAudioLLM/CosyVoice)
 - [Real-Time-Voice-Cloning](https://github.com/CorentinJ/Real-Time-Voice-Cloning)
