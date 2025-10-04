@@ -53,6 +53,11 @@ class AlignmentStreamAnalyzer:
         # Using `output_attentions=True` is incompatible with optimized attention kernels, so
         # using it for all layers slows things down too much. We can apply it to just one layer
         # by intercepting the kwargs and adding a forward hook (credit: jrm)
+        if hasattr(tfmr, "set_attn_implementation"):
+            try:
+                tfmr.set_attn_implementation("eager")
+            except Exception as exc:
+                logger.warning("Failed to switch attention implementation to eager: %s", exc)
         self.last_aligned_attn = None
         self._add_attention_spy(tfmr, alignment_layer_idx)
 
@@ -71,7 +76,9 @@ class AlignmentStreamAnalyzer:
             - When `output_attentions=True`, `LlamaSdpaAttention.forward` calls `LlamaAttention.forward`.
             - `attn_output` has shape [B, H, T0, T0] for the 0th entry, and [B, H, 1, T0+i] for the rest i-th.
             """
-            step_attention = output[1].cpu() # (B, 16, N, N)
+            if output is None or len(output) < 2 or output[1] is None:
+                return
+            step_attention = output[1].detach().cpu() # (B, 16, N, N)
             self.last_aligned_attn = step_attention[0].mean(0) # (N, N)
 
         target_layer = tfmr.layers[alignment_layer_idx].self_attn
@@ -92,6 +99,8 @@ class AlignmentStreamAnalyzer:
         """
         # extract approximate alignment matrix chunk (1 frame at a time after the first chunk)
         aligned_attn = self.last_aligned_attn # (N, N)
+        if aligned_attn is None:
+            return logits
         i, j = self.text_tokens_slice
         if self.curr_frame_pos == 0:
             # first chunk has conditioning info, text tokens, and BOS token

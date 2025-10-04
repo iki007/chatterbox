@@ -46,3 +46,13 @@ checkpoints/
 
 # Ignore generated sample .wav files
 **/*.wav
+chatterbox/
+cache/
+chatterbox/bin/gradio
+chatterbox/bin/hf
+chatterbox/bin/httpx
+chatterbox/bin/markdown-it
+chatterbox/bin/pygmentize
+chatterbox/bin/ruff
+chatterbox/bin/typer
+chatterbox/bin/upload_theme

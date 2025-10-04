@@ -2,8 +2,6 @@
 # Based on analysis of the codebase imports
 
 # Core ML and Audio
-torch>=2.0.0
-torchaudio>=2.0.0
 transformers>=4.46.3
 diffusers>=0.29.0
 safetensors>=0.5.3
@@ -30,12 +28,11 @@ omegaconf>=2.3.0
 # Hugging Face
 huggingface_hub
 
+# Optimisation helpers
+accelerate
+
 # API server
 fastapi>=0.104.1
 uvicorn[standard]>=0.24.0
 pydantic>=2.0.0
 python-multipart
-
-# Optional: for better performance
-# accelerate  # For faster model loading
-# xformers   # For memory-efficient attention (if you have compatible GPU)

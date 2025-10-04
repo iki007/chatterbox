@@ -14,11 +14,13 @@ src_path = project_root / "src"
 if src_path.exists():
     sys.path.insert(0, str(src_path))
 
+os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba_cache")
+
 import io
 import logging
 import tempfile
 import time
-from typing import Optional, Literal
+from typing import Optional, Literal, Union, Sequence, Any
 
 import torch
 import torchaudio
@@ -119,15 +121,66 @@ except ImportError as e:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+SKIP_STARTUP_LOAD = os.getenv("CBX_SKIP_STARTUP_LOAD", "0") == "1"
+
 # Global model instance
 tts_model: Optional[ChatterboxTTS] = None
 
+SUPPORTED_VOICES = {"default", "alloy", "echo", "fable", "onyx", "nova", "shimmer"}
+SUPPORTED_RESPONSE_FORMATS = {"mp3", "opus", "aac", "flac", "wav", "pcm"}
+
+
+def normalize_input_text(raw_input: Union[str, Sequence[Union[str, dict[str, Any]]]]) -> str:
+    """Coerce OpenAI-style input payloads into a single text string."""
+    if isinstance(raw_input, str):
+        return raw_input
+
+    if isinstance(raw_input, Sequence):
+        collected: list[str] = []
+
+        for item in raw_input:
+            if isinstance(item, str):
+                collected.append(item)
+                continue
+
+            if isinstance(item, dict):
+                text_value = item.get("text")
+
+                if isinstance(text_value, str) and text_value.strip():
+                    collected.append(text_value)
+                    continue
+
+                if item.get("type") == "input_text":
+                    text_value = item.get("text") or item.get("value")
+                    if isinstance(text_value, str) and text_value.strip():
+                        collected.append(text_value)
+
+        if collected:
+            return " ".join(collected)
+
+    raise ValueError("No textual content found in 'input' field")
+
+
 class TTSRequest(BaseModel):
-    model: Literal["tts-1", "tts-1-hd", "chatterbox"] = "chatterbox"
-    input: str = Field(..., max_length=4096, description="The text to generate audio for")
-    voice: Literal["alloy", "echo", "fable", "onyx", "nova", "shimmer", "default"] = "default"
-    response_format: Literal["mp3", "opus", "aac", "flac", "wav", "pcm"] = "mp3"
+    model: str = Field(
+        "chatterbox",
+        description="Model identifier (value is accepted for compatibility only)",
+    )
+    input: Union[str, Sequence[Union[str, dict[str, Any]]]] = Field(
+        ..., max_length=4096, description="The text or segments to generate audio for"
+    )
+    voice: str = Field(
+        "default",
+        description="Requested voice name. Unsupported values fallback to 'default'.",
+    )
+    response_format: str = Field(
+        "mp3",
+        description="Audio format to return. Unsupported values fallback to 'mp3'.",
+    )
     speed: float = Field(1.0, ge=0.25, le=4.0, description="Speed of the generated audio")
+
+    class Config:
+        extra = "allow"
 
 class ModelInfo(BaseModel):
     id: str
@@ -186,6 +239,9 @@ def load_model(device: str = "auto") -> ChatterboxTTS:
 
 def audio_to_format(audio_tensor: torch.Tensor, sample_rate: int, format: str) -> bytes:
     """Convert audio tensor to specified format"""
+    if audio_tensor is None:
+        raise ValueError("Generated audio tensor is empty")
+
     if audio_tensor.is_cuda:
         audio_tensor = audio_tensor.cpu()
         
@@ -218,6 +274,10 @@ def audio_to_format(audio_tensor: torch.Tensor, sample_rate: int, format: str) -
 @app.on_event("startup")
 async def startup_event():
     """Initialize the model on startup"""
+    if SKIP_STARTUP_LOAD:
+        logger.info("⏳ Skipping model load on startup (CBX_SKIP_STARTUP_LOAD=1)")
+        return
+
     try:
         logger.info("🚀 Starting Chatterbox TTS API...")
         load_model()
@@ -290,32 +350,57 @@ async def create_speech(request: TTSRequest):
             raise HTTPException(status_code=500, detail=f"Failed to load TTS model: {str(e)}")
     
     try:
-        logger.info(f"🎤 Generating speech for: '{request.input[:50]}{'...' if len(request.input) > 50 else ''}' (voice: {request.voice})")
-        
+        try:
+            normalized_text = normalize_input_text(request.input)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        requested_voice = (request.voice or "default").lower()
+        if requested_voice not in SUPPORTED_VOICES:
+            logger.warning(
+                "Voice '%s' not recognised. Falling back to 'default'.",
+                request.voice,
+            )
+            requested_voice = "default"
+
+        response_format = (request.response_format or "mp3").lower()
+        if response_format not in SUPPORTED_RESPONSE_FORMATS:
+            logger.warning(
+                "Response format '%s' not supported. Falling back to 'mp3'.",
+                request.response_format,
+            )
+            response_format = "mp3"
+
+        logger.info(
+            "🎤 Generating speech for: '%s' (voice: %s)",
+            normalized_text[:50] + ("..." if len(normalized_text) > 50 else ""),
+            requested_voice,
+        )
+
         start_time = time.time()
         
         # Generate audio
         if hasattr(tts_model, 'generate'):
             audio_tensor = tts_model.generate(
-                text=request.input,
+                text=normalized_text,
                 temperature=0.8,
                 exaggeration=0.5
             )
         else:
             # Dummy generation for testing
-            audio_tensor = tts_model.generate(request.input)
+            audio_tensor = tts_model.generate(normalized_text)
         
         generation_time = time.time() - start_time
         
         # Convert to requested format
-        audio_bytes = audio_to_format(audio_tensor, tts_model.sr, request.response_format)
+        audio_bytes = audio_to_format(audio_tensor, tts_model.sr, response_format)
         
         content_types = {
             "mp3": "audio/mpeg", "opus": "audio/ogg", "aac": "audio/aac", 
             "flac": "audio/flac", "wav": "audio/wav", "pcm": "audio/pcm"
         }
         
-        content_type = content_types.get(request.response_format, "audio/wav")
+        content_type = content_types.get(response_format, "audio/wav")
         
         # Log performance stats
         audio_duration = len(audio_tensor[0]) / tts_model.sr
@@ -330,7 +415,7 @@ async def create_speech(request: TTSRequest):
             content=audio_bytes,
             media_type=content_type,
             headers={
-                "Content-Disposition": f"attachment; filename=speech.{request.response_format}",
+                "Content-Disposition": f"attachment; filename=speech.{response_format}",
                 "X-Generation-Time": str(generation_time),
                 "X-Audio-Duration": str(audio_duration),
                 "X-RTF": str(rtf)
@@ -338,7 +423,7 @@ async def create_speech(request: TTSRequest):
         )
         
     except Exception as e:
-        logger.error(f"❌ Error generating speech: {e}")
+        logger.exception("❌ Error generating speech")
         raise HTTPException(status_code=500, detail=f"Speech generation failed: {str(e)}")
 
 if __name__ == "__main__":

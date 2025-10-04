@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -123,7 +124,11 @@ class ChatterboxTTS:
         self.tokenizer = tokenizer
         self.device = device
         self.conds = conds
-        self.watermarker = perth.PerthImplicitWatermarker()
+        try:
+            self.watermarker = perth.PerthImplicitWatermarker()
+        except Exception as exc:
+            logging.warning("Perth watermarker unavailable: %s", exc)
+            self.watermarker = None
 
     @classmethod
     def from_local(cls, ckpt_dir, device) -> 'ChatterboxTTS':
@@ -259,5 +264,16 @@ class ChatterboxTTS:
                 ref_dict=self.conds.gen,
             )
             wav = wav.squeeze(0).detach().cpu().numpy()
-            watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
+
+            watermarked_wav = wav
+            if self.watermarker is not None:
+                try:
+                    watermarked_wav = self.watermarker.apply_watermark(wav, sample_rate=self.sr)
+                    # Some versions return (audio, metadata)
+                    if isinstance(watermarked_wav, tuple):
+                        watermarked_wav = watermarked_wav[0]
+                except Exception as exc:
+                    logging.warning("Watermarking failed; returning raw audio: %s", exc)
+                    watermarked_wav = wav
+
         return torch.from_numpy(watermarked_wav).unsqueeze(0)
